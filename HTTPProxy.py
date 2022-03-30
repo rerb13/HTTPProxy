@@ -4,15 +4,29 @@
 # February 11, 2020
 
 import sys
+import os
 import socket
 import select
-import urlparse
+from urllib.parse import urlparse
+import urllib.request
+import urllib.error
 import datetime
 import threading
+from aiohttp import request
 import requests
 import hashlib
+import json
+# import vt
 from optparse import OptionParser
+from dotenv import load_dotenv
 
+load_dotenv()
+
+VT_API_KEY = os.getenv("VT_API_KEY")
+
+# telnet localhost 2100
+# GET http://www.google.com/ HTTP/1.0
+# GET http://www.cs.utah.edu/~kobus/simple.html HTTP/1.0
 
 def main():
     """
@@ -23,47 +37,52 @@ def main():
     """
 
     proxyPort = 2100
-    proxyAddress = 'localhost'
+    proxyAddress = "localhost"
 
-    parser = OptionParser()
-    parser.add_option("-k", dest="apiKey", type="string")
-    (options, args) = parser.parse_args()
-    apiKey = options.apiKey
+    # parser = OptionParser()
+    # parser.add_option("-k", dest="apiKey", type="string")
+    # (options, args) = parser.parse_args()
+    # apiKey = options.apiKey
+
+    apiKey = VT_API_KEY
 
     # Establish socket connection
     try:
-        proxySocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        print "Client socket successfully created: ",  proxySocket.fileno()
+        proxySocket = socket.socket(
+            family=socket.AF_INET, 
+            type=socket.SOCK_STREAM, 
+            proto=socket.IPPROTO_TCP,
+            )
+
+        print ("Client socket successfully created: "),  proxySocket.fileno()
     except socket.error as error:
-        print "Client socket creation failed with error: ", error
+        print ("Client socket creation failed with error: "), error
         sys.exit(1)
 
+    proxySocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     proxySocket.bind((proxyAddress, proxyPort))
-    print 'Bound to: ', proxySocket.getsockname()
+    print ("Bound to: ", proxySocket.getsockname())
 
-    proxySocket.listen(5)
+    # 10 is the backlog size or the size of the connections queue
+    proxySocket.listen(10)
     input = [proxySocket]
 
-    # If the escape command ctrl + C is used, end the connection and exit
-    try:
-        while 1:
-            inputready, outputready, exceptready = select.select(input, [], [])
+    while True:
+        inputready, outputready, exceptready = select.select(input, [], [])
 
-            for s in inputready:
-                # Client has arrived, accept, and create thread
-                if s == proxySocket:
-                    print 'Handle proxy socket'
-                    clientSocket, addr = proxySocket.accept()
-                    print 'Accepted connection from: ', addr
+        for s in inputready:
+            # Client has arrived, accept, and create thread
+            if s == proxySocket:
+                print ("Handle proxy socket")
+                clientSocket, addr = proxySocket.accept()
+                print ("Accepted connection from: ", addr)
 
-                    clientThread = threading.Thread(
-                        target=processClientRequest, args=(clientSocket, addr, apiKey))
-                    clientThread.setDaemon(True)
-                    clientThread.start()
+                clientThread = threading.Thread(
+                    target=processClientRequest, args=(clientSocket, addr, apiKey), daemon=True)
 
-    except KeyboardInterrupt:
-        print 'Closing proxy server.'
-        sys.exit(1)
+                clientThread.start()
+
+
 
 
 def errorMessage(errorCode):
@@ -77,7 +96,7 @@ def errorMessage(errorCode):
         datetime.datetime.now().strftime("%a, %d %b %Y %H:%M:%S"))
     error += "Connection: close\r\n"
     error += "\r\n"
-    return error
+    return error.encode()
 
 
 def processClientRequest(clientSocket, addr, apiKey):
@@ -89,64 +108,80 @@ def processClientRequest(clientSocket, addr, apiKey):
     are closed.
     """
 
-    requestMessage = clientSocket.recv(1024)
-    print 'Reading data from: ', clientSocket.getpeername()
+    print ("Reading data from: ", clientSocket.getpeername())
+    requestMessage = b""
+    while True:
+        clientRequest = clientSocket.recv(4096)
+
+        if clientRequest.decode() == "\r\n":
+            break
+
+        requestMessage += clientRequest
+
+    requestMessage = requestMessage.decode()
+
+    # requestLine = requestMessage.readline().decode()
+    # method, url, version = requestLine.split(" ", 2)
+    # version = version.strip()
+    # assert method in ["GET", "POST"]
 
     # If the requestMessage is empty, return a 400 Bad Request response
-    if not requestMessage.rstrip():
-        print 'Parsed incorrectly'
-        clientSocket.send(errorMessage('400 Bad Request'))
-        print 'Closing remote server socket', serverSocket.getpeername()
+    if not requestMessage.strip():
+        print ("Parsed incorrectly")
+        clientSocket.send(errorMessage("400 Bad Request"))
+        print ("Closing remote server socket", serverSocket.getpeername())
         clientSocket.close()
 
-        print '\nWaiting for connection\n'
+        print ("\nWaiting for connection\n")
         return None
 
-    requestLine = requestMessage.split('\n')[0].split(' ')
+    requestLine = requestMessage.split("\n")[0].split(" ")
+    # requestLine = requestMessage.decode().split(" ")
+    print("Request: ", requestLine)
 
     # If the request line is not formatted properly, return a 400 Bad
     # Request response
     if len(requestLine) != 3:
-        print 'Parsed incorrectly'
-        clientSocket.send(errorMessage('400 Bad Request'))
+        print ("Incorrect request format")
+        clientSocket.send(errorMessage("400 Bad Request"))
         clientSocket.close()
 
-        print '\nWaiting for connection\n'
+        print ("\nWaiting for connection\n")
         return None
 
-    url = urlparse.urlsplit(requestLine[1])
+    url = urlparse(requestLine[1])
 
     # If the method requested is not GET, return a 501 Not Implemented
     # response
-    if requestLine[0] != 'GET':
-        print 'Incorrect method'
-        clientSocket.send(errorMessage('501 Not Implemented'))
+    if requestLine[0] != "GET":
+        print ("Incorrect method")
+        clientSocket.send(errorMessage("501 Not Implemented"))
         clientSocket.close()
 
-        print '\nWaiting for connection\n'
+        print ("\nWaiting for connection\n")
         return None
 
     # Else if the URL is incorrectly formatted, return a 400 Bad Request response
     elif not (url.scheme and url.netloc):
-        print 'URL incorrectly formatted'
-        clientSocket.send(errorMessage('400 Bad Request'))
+        print ("URL incorrectly formatted")
+        clientSocket.send(errorMessage("400 Bad Request"))
         clientSocket.close()
 
-        print '\nWaiting for connection\n'
+        print ("\nWaiting for connection\n")
         return None
 
     # Else if the HTTP/1.0 is not requested, return a 400 Bad Request response
-    elif requestLine[2].rstrip() != 'HTTP/1.0':
-        print 'Incorrect HTTP version'
-        clientSocket.send(errorMessage('400 Bad Request'))
+    elif requestLine[2].strip() != "HTTP/1.0":
+        print ("Incorrect HTTP version")
+        clientSocket.send(errorMessage("400 Bad Request"))
         clientSocket.close()
 
-        print '\nWaiting for connection\n'
+        print ("\nWaiting for connection\n")
         return None
 
     # Build the request message from the client to the server
     serverRequest = "%s %s %s\r\n" % (
-        requestLine[0], url.path, requestLine[2].rstrip())
+        requestLine[0], url.path, requestLine[2].strip())
     serverRequest += "Host: %s\r\n" % (url.hostname)
     serverRequest += "Connection: close\r\n"
     serverRequest += "\r\n"
@@ -162,57 +197,58 @@ def processClientRequest(clientSocket, addr, apiKey):
             socket.AF_INET, socket.SOCK_STREAM)
         serverSocket.connect((url.hostname, port))
     except socket.error as error:
-        print "Server socket creation failed with error: ", error
-        clientSocket.send(errorMessage('502 Bad Gateway'))
+        print ("Server socket creation failed with error: "), error
+        clientSocket.send(errorMessage("502 Bad Gateway"))
         clientSocket.close()
 
-        print '\nWaiting for connection\n'
+        print ("\nWaiting for connection\n")
         return None
 
-    serverSocket.send(serverRequest)
+    serverSocket.send(serverRequest.encode())
 
-    print 'Connecting to remote server: ', serverSocket.getpeername()
+    print ("Connecting to remote server: ", serverSocket.getpeername())
 
-    checkResponse = ""
-    while 1:
-        serverResponse = serverSocket.recv(1024)
+    checkResponse = b""
+    while True:
+        serverResponse = serverSocket.recv(4096)
+
         if not serverResponse:
             break
 
         checkResponse += serverResponse
 
     if checkResponse:
-
         # Split the received response at new line "\r\n\r\n"
-        splitResponse = checkResponse.split("\r\n\r\n", 1)
+        # splitResponse = checkResponse.decode("ISO-8859-1").split("\r\n\r\n", 1) <- need to check charset type to determine encode/decode
+        splitResponse = checkResponse.decode().split("\r\n\r\n", 1)
 
         # Convert the serverResponse data (not including headers)
         # to MD5
-        encMessage = hashlib.md5(splitResponse[1]).hexdigest()
+        encMessage = hashlib.md5(splitResponse[1].encode()).hexdigest()
 
         # Set up VirusTotal connection
-        VTurl = 'https://www.virustotal.com/vtapi/v2/file/report'
+        VTurl = "https://www.virustotal.com/vtapi/v2/file/report"
         params = {
-            'apikey': apiKey, 'resource': encMessage}
+            "apikey": apiKey, "resource": encMessage}
         response = requests.get(VTurl, params=params)
         jsonResponse = response.json()
 
         # If the response from VirusTotal is empty, return 5xx Server Error
         if not jsonResponse:
-            clientSocket.send(errorMessage('5xx Server Error'))
+            clientSocket.send(errorMessage("5xx Server Error"))
 
         # Else if the response from VirusTotal is not 1, the value sent
         # to VirusTotal was not found in their database, assume it is
         # "clean" and send server response to the client
-        elif jsonResponse['response_code'] != 1:
+        elif jsonResponse["response_code"] != 1:
             clientSocket.send(checkResponse)
 
-        # Else the requested value was found in VirusTotal's database
+        # Else the requested value was found in VirusTotal"s database
         else:
 
             # If no positive results were found, send server response
             # back to the client
-            if jsonResponse['positives'] == 0:
+            if jsonResponse["positives"] == 0:
                 clientSocket.send(checkResponse)
 
             # Else malware was found, send server response header
@@ -222,13 +258,13 @@ def processClientRequest(clientSocket, addr, apiKey):
                 malwareResponse += "content blocked" + "\r\n\r\n"
                 clientSocket.send(malwareResponse)
 
-    print 'Closing remote server socket', serverSocket.getpeername()
+    print ("Closing remote server socket", serverSocket.getpeername())
     serverSocket.close()
     clientSocket.close()
 
-    print '\nWaiting for connection\n'
+    print ("\nWaiting for connection\n")
     return None
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

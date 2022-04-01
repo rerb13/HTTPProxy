@@ -16,13 +16,13 @@ from aiohttp import request
 import requests
 import hashlib
 import json
+import logging
+import traceback
 # import vt
 from optparse import OptionParser
 from dotenv import load_dotenv
 
 load_dotenv()
-
-VT_API_KEY = os.getenv("VT_API_KEY")
 
 # telnet localhost 2100
 # GET http://www.google.com/ HTTP/1.0
@@ -44,20 +44,23 @@ def main():
     # (options, args) = parser.parse_args()
     # apiKey = options.apiKey
 
-    apiKey = VT_API_KEY
+    apiKey = os.getenv("VT_API_KEY")
 
     # Establish socket connection
     try:
         proxySocket = socket.socket(
-            family=socket.AF_INET, 
-            type=socket.SOCK_STREAM, 
-            proto=socket.IPPROTO_TCP,
+                family=socket.AF_INET, 
+                type=socket.SOCK_STREAM, 
+                proto=socket.IPPROTO_TCP,
             )
 
         print ("Client socket successfully created: "),  proxySocket.fileno()
+    except KeyboardInterrupt:
+        print("Shutting down server")
+        sys.exit()
     except socket.error as error:
         print ("Client socket creation failed with error: "), error
-        sys.exit(1)
+        sys.exit()
 
     proxySocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     proxySocket.bind((proxyAddress, proxyPort))
@@ -65,25 +68,16 @@ def main():
 
     # 10 is the backlog size or the size of the connections queue
     proxySocket.listen(10)
-    input = [proxySocket]
 
     while True:
-        inputready, outputready, exceptready = select.select(input, [], [])
+        clientSocket, ipAddrress = proxySocket.accept()
 
-        for s in inputready:
-            # Client has arrived, accept, and create thread
-            if s == proxySocket:
-                print ("Handle proxy socket")
-                clientSocket, addr = proxySocket.accept()
-                print ("Accepted connection from: ", addr)
+        print ("Accepted connection from: ", ipAddrress)
 
-                clientThread = threading.Thread(
-                    target=processClientRequest, args=(clientSocket, addr, apiKey), daemon=True)
+        clientThread = threading.Thread(
+            target=processClientRequest, args=(clientSocket, ipAddrress, apiKey), daemon=True)
 
-                clientThread.start()
-
-
-
+        clientThread.start()
 
 def errorMessage(errorCode):
     """
@@ -99,7 +93,7 @@ def errorMessage(errorCode):
     return error.encode()
 
 
-def processClientRequest(clientSocket, addr, apiKey):
+def processClientRequest(clientSocket, ipAddress, apiKey):
     """
     processClientRequest is given the clientSocket and receives
     the requested message. A connection to the destination server
@@ -108,7 +102,9 @@ def processClientRequest(clientSocket, addr, apiKey):
     are closed.
     """
 
-    print ("Reading data from: ", clientSocket.getpeername())
+    clientSocket.send(str.encode("Please enter your request below: \r\n\r\n"))
+    print ("\nReading data from: ", clientSocket.getpeername())
+
     requestMessage = b""
     while True:
         clientRequest = clientSocket.recv(4096)
@@ -118,31 +114,23 @@ def processClientRequest(clientSocket, addr, apiKey):
 
         requestMessage += clientRequest
 
-    requestMessage = requestMessage.decode()
-
-    # requestLine = requestMessage.readline().decode()
-    # method, url, version = requestLine.split(" ", 2)
-    # version = version.strip()
-    # assert method in ["GET", "POST"]
+    requestMessage = requestMessage.decode().strip()
 
     # If the requestMessage is empty, return a 400 Bad Request response
-    if not requestMessage.strip():
-        print ("Parsed incorrectly")
+    if not requestMessage:
+        print ("Empty request")
         clientSocket.send(errorMessage("400 Bad Request"))
-        print ("Closing remote server socket", serverSocket.getpeername())
         clientSocket.close()
 
         print ("\nWaiting for connection\n")
         return None
 
     requestLine = requestMessage.split("\n")[0].split(" ")
-    # requestLine = requestMessage.decode().split(" ")
-    print("Request: ", requestLine)
 
     # If the request line is not formatted properly, return a 400 Bad
     # Request response
     if len(requestLine) != 3:
-        print ("Incorrect request format")
+        print ("Request formatted incorrectly")
         clientSocket.send(errorMessage("400 Bad Request"))
         clientSocket.close()
 

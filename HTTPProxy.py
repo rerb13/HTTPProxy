@@ -1,8 +1,3 @@
-# PA1-Final
-# Ro Erb
-# CS 4480
-# February 11, 2020
-
 import sys
 import os
 import socket
@@ -18,7 +13,6 @@ import hashlib
 import json
 import logging
 import traceback
-# import vt
 from optparse import OptionParser
 from dotenv import load_dotenv
 
